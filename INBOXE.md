@@ -6,11 +6,31 @@ carries is [#720](https://github.com/zio/zio-protoquill/pull/720), which removes
 redundant `GenericEncoder`/`GenericDecoder` implicit searches from the `ctx.run()`
 pipeline. That search is the dominant cost of compiling a Quill-heavy module, so
 the fix is not a marginal one for a codebase whose repositories are all static
-queries. There is no artifact that carries it.
+queries.
 
 This fork publishes the Scala 3 artifacts from upstream `master` to INBOXE's
-GitHub Packages registry so the fix is reachable from a build. It carries no
-INBOXE source change and is not meant to: it exists to release, not to diverge.
+GitHub Packages registry as an immutable, pinnable release. It carries no INBOXE
+source change and is not meant to: it exists to release, not to diverge.
+
+## Why not the upstream snapshot
+
+Upstream does publish a snapshot on every push to `master`, so an artifact
+carrying #720 exists on Central:
+
+```text
+dev.zio:quill-jdbc-zio_3:0.0.0+1-76803759-SNAPSHOT
+```
+
+It is not a viable build input. A `-SNAPSHOT` coordinate is mutable by
+definition, so the bytes a build resolves under it are not the bytes a later
+build resolves, which is the property a reproducible build is built on. Snapshot
+retention then removes the coordinate entirely: at the time of writing only
+three exist, one per recent commit, and everything older has been purged. And
+the version reads `0.0.0+1-<sha>` because the CI checkout carries no tags for
+dynver to describe, so it sorts below every real version and conveys no ordering
+at all.
+
+A pinned, immutable artifact republished from the same source solves all three.
 
 ## Layout
 
