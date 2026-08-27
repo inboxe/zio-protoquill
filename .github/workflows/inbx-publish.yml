@@ -1,0 +1,123 @@
+#
+# Publishes the Scala 3 Quill artifacts this fork carries to INBOXE's GitHub
+# Packages registry.
+#
+# Upstream has not cut a release of the Scala 3 line since 4.8.6 (2024-10-30),
+# so fixes that are merged into `master` — notably the implicit-search work in
+# zio/zio-protoquill#720 — are unreachable from any published artifact. This
+# workflow closes that gap without waiting on the upstream release cadence.
+#
+# `master` is a pristine mirror of `zio/zio-protoquill@master` and carries no
+# INBOXE change, which is what keeps `gh repo sync` a fast-forward. Everything
+# INBOXE adds lives on this branch, and the build-level overrides below are
+# written at run time rather than committed to the tree.
+#
+name: Publish to GitHub Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit-ish of this fork to build
+        default: master
+        required: true
+      version:
+        description: Artifact version (blank derives 4.8.7-inbx.<run number>)
+        default: ""
+        required: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+
+      - uses: sbt/setup-sbt@v1
+
+      - name: Resolve the version
+        id: version
+        run: |
+          version='${{ inputs.version }}'
+          if [ -z "$version" ]; then
+            version="4.8.7-inbx.${{ github.run_number }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The groupId is left as upstream's own `dev.zio`, which `master` adopted
+      # after 4.8.6. Publishing under the coordinate the next release will carry
+      # means adopting that release is a version bump and nothing else, and it
+      # keeps these artifacts from being mistaken for the `io.getquill` ones
+      # they supersede. The `-inbx` version is what marks the provenance.
+      #
+      # The file name sorts after `build.sbt`, and sbt applies root `.sbt` files
+      # in name order, so these overrides win over the build's `inThisBuild`.
+      - name: Override the publishing coordinates
+        run: |
+          cat > zz-inbx-publish.sbt <<'SBT'
+          ThisBuild / version := sys.env("INBX_VERSION")
+          ThisBuild / isSnapshot := false
+          ThisBuild / publishMavenStyle := true
+          ThisBuild / publishTo := Some(
+            "GitHub Packages" at "https://maven.pkg.github.com/inboxe/zio-protoquill"
+          )
+          ThisBuild / credentials += Credentials(
+            "GitHub Package Registry",
+            "maven.pkg.github.com",
+            sys.env("GITHUB_ACTOR"),
+            sys.env("GITHUB_TOKEN")
+          )
+          SBT
+          cat zz-inbx-publish.sbt
+
+      # Only the four modules a ZIO JDBC consumer resolves. The rest of the
+      # closure — `quill-engine`, `quill-core` and the other Scala 2.13
+      # artifacts — is unchanged by this fork and resolves from Maven Central.
+      - name: Publish
+        env:
+          INBX_VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sbt -batch \
+            "set Global / packageDoc / publishArtifact := false" \
+            quill-sql/publish \
+            quill-jdbc/publish \
+            quill-zio/publish \
+            quill-jdbc-zio/publish
+
+      # A published version is immutable, so the tag that names the upstream
+      # commit it was built from has to be created here, once, or the mapping
+      # from artifact to source is lost the next time `master` moves.
+      - name: Tag the commit that was published
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="inbx/${{ steps.version.outputs.version }}"
+          git tag -a "$tag" -m "Published ${{ steps.version.outputs.version }}"
+          git push origin "$tag"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`${{ steps.version.outputs.version }}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| groupId | \`dev.zio\` |"
+            echo "| upstream commit | \`$(git rev-parse HEAD)\` |"
+            echo "| tag | \`inbx/${{ steps.version.outputs.version }}\` |"
+            echo
+            echo "Modules: quill-sql, quill-jdbc, quill-zio, quill-jdbc-zio."
+          } >> "$GITHUB_STEP_SUMMARY"
